@@ -1,0 +1,783 @@
+---
+title: "MSDS 6306: Case Study 1 - Frito-Lay Employee Attrition"
+author: "Jorge Vazquez"
+date: "10/19/2026"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+# Unit 1-7 packages
+library(tidyverse)
+library(class)
+library(caret)
+library(e1071)
+library(GGally)
+```
+
+# 1. Data Setup
+
+```{r}
+# Read in the case study data
+df = read.csv("C:/Users/jorge/Downloads/CaseStudy1-data.csv", header = TRUE, stringsAsFactors = TRUE)
+
+# Initial structure and dimensions
+dim(df)
+str(df)
+
+# Checking for missing values
+sapply(df, function(x) sum(is.na(x)))
+
+# Remove constant columns (same value for every employee)
+df = df %>% select(-EmployeeCount, -Over18, -StandardHours)
+
+# Summary table of attrition counts and percents
+attritionSummary = df %>%
+  group_by(Attrition) %>%
+  summarize(Count = n()) %>%
+  mutate(Percent = round((Count / sum(Count)) * 100, 2))
+
+attritionSummary
+```
+
+# 2. Significance Tests
+
+Every candidate feature gets a test. Numeric and rating variables get a t-test (Unit 4).
+Categorical variables get a chi-square test. If the p-value is below 0.05, the feature
+name is added to `sigFeatures`.
+
+```{r}
+# Numeric/rating variables (ratings like 1-4 are treated as numeric)
+numericVars = c("MonthlyIncome", "JobLevel", "StockOptionLevel", "Age", "TotalWorkingYears",
+                "YearsAtCompany", "YearsInCurrentRole", "YearsWithCurrManager",
+                "YearsSinceLastPromotion", "NumCompaniesWorked", "JobInvolvement",
+                "JobSatisfaction", "EnvironmentSatisfaction", "RelationshipSatisfaction",
+                "WorkLifeBalance", "DistanceFromHome", "TrainingTimesLastYear", "Education",
+                "PerformanceRating", "PercentSalaryHike", "HourlyRate", "DailyRate", "MonthlyRate")
+
+# Categorical variables
+categoricalVars = c("OverTime", "JobRole", "MaritalStatus", "Department",
+                    "BusinessTravel", "EducationField", "Gender")
+
+# Empty lists to hold the significant features
+sigNumeric = c()
+sigCategorical = c()
+
+# Table to hold every test result
+testResults = data.frame()
+
+#  t-tests for numeric variables (Using a loop to make it more condensed)
+for(v in numericVars)
+{
+  result = t.test(df[[v]] ~ df$Attrition)
+  print(v)
+  print(result)
+
+  testResults = rbind(testResults, data.frame(Feature = v, Test = "t-test",
+                                              Statistic = round(result$statistic, 3),
+                                              PValue = result$p.value))
+
+  if(result$p.value < 0.05)
+  {
+    sigNumeric = c(sigNumeric, v)
+  }
+}
+
+#  Chi-square tests for categorical variables 
+for(v in categoricalVars)
+{
+  result = chisq.test(table(df[[v]], df$Attrition))
+  print(v)
+  print(result)
+
+  testResults = rbind(testResults, data.frame(Feature = v, Test = "Chi-square",
+                                              Statistic = round(result$statistic, 3),
+                                              PValue = result$p.value))
+
+  if(result$p.value < 0.05)
+  {
+    sigCategorical = c(sigCategorical, v)
+  }
+}
+
+# Results 
+testResults$Significant = ifelse(testResults$PValue < 0.05, "Yes", "No")
+testResults$PValue = signif(testResults$PValue, 3)
+rownames(testResults) = NULL
+
+# All tests
+testResults %>% arrange(PValue)
+
+# Significant features found by the tests
+sigFeatures = c(sigNumeric, sigCategorical)
+
+sigNumeric
+sigCategorical
+sigFeatures
+length(sigFeatures)
+
+# Features that were NOT significant
+testResults %>% filter(Significant == "No")
+```
+
+# 3. Feature Summaries
+
+What percent left in each group (categorical and rating variables), and the average
+and median for leavers vs. stayers (numeric variables).
+
+```{r}
+# Variables with a small number of groups: counts and percent who left
+groupVars = c("OverTime", "JobRole", "MaritalStatus", "Department", "BusinessTravel",
+              "EducationField", "Gender", "JobLevel", "StockOptionLevel", "JobInvolvement",
+              "JobSatisfaction", "EnvironmentSatisfaction", "RelationshipSatisfaction",
+              "WorkLifeBalance", "Education", "PerformanceRating", "NumCompaniesWorked",
+              "TrainingTimesLastYear")
+
+for(v in groupVars)
+{
+  counts = table(df[[v]], df$Attrition)
+  percentLeft = round(prop.table(counts, 1)[, "Yes"] * 100, 1)
+  print(v)
+  print(cbind(counts, PercentLeft = percentLeft))
+}
+
+# Numeric variables: mean and median for stayed (No) vs left (Yes)
+continuousVars = c("MonthlyIncome", "Age", "TotalWorkingYears", "YearsAtCompany",
+                   "YearsInCurrentRole", "YearsWithCurrManager", "YearsSinceLastPromotion",
+                   "DistanceFromHome", "PercentSalaryHike", "HourlyRate", "DailyRate", "MonthlyRate")
+
+for(v in continuousVars)
+{
+  print(v)
+  print(rbind(Mean = round(tapply(df[[v]], df$Attrition, mean), 2),
+              Median = tapply(df[[v]], df$Attrition, median)))
+}
+
+# Monthly income grouped into ranges 
+df$IncomeGroup = cut(df$MonthlyIncome,
+                     breaks = c(0, 3000, 6000, 10000, 20000),
+                     labels = c("Under $3K", "$3K-$6K", "$6K-$10K", "Over $10K"))
+
+df %>%
+  group_by(IncomeGroup, Attrition) %>%
+  summarize(Count = n()) %>%
+  mutate(Percent = round((Count / sum(Count)) * 100, 2))
+```
+
+# 4. EDA Plots
+
+```{r}
+# Overall attrition
+
+df %>%
+  ggplot(aes(x = Attrition, fill = Attrition)) +
+  geom_bar() +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.5) +
+  ggtitle("Total Attrition Counts (Frito-Lay)") +
+  xlab("Attrition Status") + ylab("Employee Count") +
+  theme(legend.position = "none")
+
+
+#  Top 3 factors
+
+# 1. OverTime
+df %>%
+  ggplot(aes(x = OverTime, fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by OverTime Status") +
+  xlab("Works OverTime") + ylab("Proportion")
+
+# 2. Monthly Income
+df %>%
+  ggplot(aes(x = Attrition, y = MonthlyIncome, fill = Attrition)) +
+  geom_boxplot() +
+  ggtitle("Monthly Income by Attrition") +
+  xlab("Attrition") + ylab("Monthly Income ($)") +
+  theme(legend.position = "none")
+
+df %>%
+  ggplot(aes(x = IncomeGroup, fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Monthly Income") +
+  xlab("Monthly Income") + ylab("Proportion")
+
+# 3. Stock Option Level
+df %>%
+  ggplot(aes(x = as.factor(StockOptionLevel), fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Stock Option Level") +
+  xlab("Stock Option Level (0 = None, 3 = Highest)") + ylab("Proportion")
+
+
+# ---------- Other significant categorical variables ----------
+
+# Job Role (Unit 2 geom_col + coord_flip)
+df %>%
+  group_by(JobRole, Attrition) %>%
+  summarize(Count = n()) %>%
+  mutate(Percent = round((Count / sum(Count)) * 100, 2)) %>%
+  filter(Attrition == "Yes") %>%
+  ggplot(aes(x = reorder(JobRole, Percent), y = Percent, fill = JobRole)) +
+  geom_col() +
+  coord_flip() +
+  ggtitle("Attrition Percentage by Job Role") +
+  xlab("Job Role") + ylab("Attrition Rate (%)") +
+  theme(legend.position = "none")
+
+# Marital Status
+df %>%
+  ggplot(aes(x = MaritalStatus, fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Marital Status") +
+  xlab("Marital Status") + ylab("Proportion")
+
+# Department
+df %>%
+  ggplot(aes(x = Department, fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Department") +
+  xlab("Department") + ylab("Proportion")
+
+# Business Travel
+df %>%
+  ggplot(aes(x = BusinessTravel, fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Business Travel") +
+  xlab("Business Travel") + ylab("Proportion")
+
+
+# ---------- Other significant rating / level variables ----------
+
+# Job Level
+df %>%
+  ggplot(aes(x = as.factor(JobLevel), fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Job Level") +
+  xlab("Job Level (1 = Entry, 5 = Executive)") + ylab("Proportion")
+
+# Job Involvement
+df %>%
+  ggplot(aes(x = as.factor(JobInvolvement), fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Job Involvement") +
+  xlab("Job Involvement (1 = Low, 4 = Very High)") + ylab("Proportion")
+
+# Job Satisfaction
+df %>%
+  ggplot(aes(x = as.factor(JobSatisfaction), fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Job Satisfaction") +
+  xlab("Job Satisfaction (1 = Low, 4 = Very High)") + ylab("Proportion")
+
+# Environment Satisfaction
+df %>%
+  ggplot(aes(x = as.factor(EnvironmentSatisfaction), fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Environment Satisfaction") +
+  xlab("Environment Satisfaction (1 = Low, 4 = Very High)") + ylab("Proportion")
+
+# Work-Life Balance
+df %>%
+  ggplot(aes(x = as.factor(WorkLifeBalance), fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Work-Life Balance") +
+  xlab("Work-Life Balance (1 = Bad, 4 = Best)") + ylab("Proportion")
+
+
+# Other significant numeric variables 
+
+# Monthly Income across Job Levels
+df %>%
+  ggplot(aes(x = as.factor(JobLevel), y = MonthlyIncome, color = Attrition)) +
+  geom_boxplot() +
+  ggtitle("Monthly Income by Job Level and Attrition") +
+  xlab("Job Level") + ylab("Monthly Income ($)")
+
+# Age
+df %>%
+  ggplot(aes(x = Attrition, y = Age, fill = Attrition)) +
+  geom_boxplot() +
+  ggtitle("Age by Attrition") +
+  xlab("Attrition") + ylab("Age (years)") +
+  theme(legend.position = "none")
+
+# Total Working Years
+df %>%
+  ggplot(aes(x = Attrition, y = TotalWorkingYears, fill = Attrition)) +
+  geom_boxplot() +
+  ggtitle("Total Working Years by Attrition") +
+  xlab("Attrition") + ylab("Total Working Years") +
+  theme(legend.position = "none")
+
+# Years at Company
+df %>%
+  ggplot(aes(x = Attrition, y = YearsAtCompany, fill = Attrition)) +
+  geom_boxplot() +
+  ggtitle("Years at Company by Attrition") +
+  xlab("Attrition") + ylab("Years at Company") +
+  theme(legend.position = "none")
+
+# Years in Current Role
+df %>%
+  ggplot(aes(x = Attrition, y = YearsInCurrentRole, fill = Attrition)) +
+  geom_boxplot() +
+  ggtitle("Years in Current Role by Attrition") +
+  xlab("Attrition") + ylab("Years in Current Role") +
+  theme(legend.position = "none")
+
+# Years with Current Manager
+df %>%
+  ggplot(aes(x = Attrition, y = YearsWithCurrManager, fill = Attrition)) +
+  geom_boxplot() +
+  ggtitle("Years with Current Manager by Attrition") +
+  xlab("Attrition") + ylab("Years with Current Manager") +
+  theme(legend.position = "none")
+
+# Distance From Home
+df %>%
+  ggplot(aes(x = Attrition, y = DistanceFromHome, fill = Attrition)) +
+  geom_boxplot() +
+  ggtitle("Distance From Home by Attrition") +
+  xlab("Attrition") + ylab("Distance From Home (miles)") +
+  theme(legend.position = "none")
+
+# Multivariable exploration (Unit 3 ggpairs)
+df %>%
+  select(Age, TotalWorkingYears, MonthlyIncome, Attrition) %>%
+  ggpairs(aes(color = Attrition))
+
+
+# Not significant: categorical
+
+# Gender
+df %>%
+  ggplot(aes(x = Gender, fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Gender") +
+  xlab("Gender") + ylab("Proportion")
+
+# Education Field
+df %>%
+  ggplot(aes(x = EducationField, fill = Attrition)) +
+  geom_bar(position = "fill") +
+  coord_flip() +
+  ggtitle("Attrition Proportion by Education Field") +
+  xlab("Education Field") + ylab("Proportion")
+
+
+# Not significant: rating / numeric 
+
+# Performance Rating (only 3s and 4s in the data)
+df %>%
+  ggplot(aes(x = as.factor(PerformanceRating), fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Performance Rating") +
+  xlab("Performance Rating (3 = Excellent, 4 = Outstanding)") + ylab("Proportion")
+
+# Education
+df %>%
+  ggplot(aes(x = as.factor(Education), fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Education") +
+  xlab("Education (1 = Below College, 5 = Doctor)") + ylab("Proportion")
+
+# Relationship Satisfaction
+df %>%
+  ggplot(aes(x = as.factor(RelationshipSatisfaction), fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Relationship Satisfaction") +
+  xlab("Relationship Satisfaction (1 = Low, 4 = Very High)") + ylab("Proportion")
+
+# Number of Companies Worked
+df %>%
+  ggplot(aes(x = as.factor(NumCompaniesWorked), fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Number of Companies Worked") +
+  xlab("Number of Companies Worked") + ylab("Proportion")
+
+# Training Times Last Year
+df %>%
+  ggplot(aes(x = as.factor(TrainingTimesLastYear), fill = Attrition)) +
+  geom_bar(position = "fill") +
+  ggtitle("Attrition Proportion by Training Times Last Year") +
+  xlab("Training Sessions Last Year") + ylab("Proportion")
+
+# Years Since Last Promotion
+df %>%
+  ggplot(aes(x = Attrition, y = YearsSinceLastPromotion, fill = Attrition)) +
+  geom_boxplot() +
+  ggtitle("Years Since Last Promotion by Attrition") +
+  xlab("Attrition") + ylab("Years Since Last Promotion") +
+  theme(legend.position = "none")
+
+# Percent Salary Hike
+df %>%
+  ggplot(aes(x = Attrition, y = PercentSalaryHike, fill = Attrition)) +
+  geom_boxplot() +
+  ggtitle("Percent Salary Hike by Attrition") +
+  xlab("Attrition") + ylab("Percent Salary Hike (%)") +
+  theme(legend.position = "none")
+
+# Hourly Rate
+df %>%
+  ggplot(aes(x = Attrition, y = HourlyRate, fill = Attrition)) +
+  geom_boxplot() +
+  ggtitle("Hourly Rate by Attrition") +
+  xlab("Attrition") + ylab("Hourly Rate") +
+  theme(legend.position = "none")
+
+# Daily Rate
+df %>%
+  ggplot(aes(x = Attrition, y = DailyRate, fill = Attrition)) +
+  geom_boxplot() +
+  ggtitle("Daily Rate by Attrition") +
+  xlab("Attrition") + ylab("Daily Rate") +
+  theme(legend.position = "none")
+
+# Monthly Rate
+df %>%
+  ggplot(aes(x = Attrition, y = MonthlyRate, fill = Attrition)) +
+  geom_boxplot() +
+  ggtitle("Monthly Rate by Attrition") +
+  xlab("Attrition") + ylab("Monthly Rate") +
+  theme(legend.position = "none")
+
+
+```
+
+# 5. Model Data Setup
+
+Both models use the 18 significant features from Section 2.
+
+```{r}
+# Copy of the data for modeling
+dfModel = df
+
+# KNN needs numbers, so the 5 significant categorical features become 0/1 flags
+# (one flag for the highest-risk group found in the EDA)
+dfModel$OverTimeNum = ifelse(dfModel$OverTime == "Yes", 1, 0)
+dfModel$SingleNum = ifelse(dfModel$MaritalStatus == "Single", 1, 0)
+dfModel$SalesRepNum = ifelse(dfModel$JobRole == "Sales Representative", 1, 0)
+dfModel$SalesDeptNum = ifelse(dfModel$Department == "Sales", 1, 0)
+dfModel$TravelFreqNum = ifelse(dfModel$BusinessTravel == "Travel_Frequently", 1, 0)
+
+# Standardize the 13 significant numeric features 
+dfModel$Z_Income = scale(dfModel$MonthlyIncome)
+dfModel$Z_JobLevel = scale(dfModel$JobLevel)
+dfModel$Z_Stock = scale(dfModel$StockOptionLevel)
+dfModel$Z_Age = scale(dfModel$Age)
+dfModel$Z_TotalYears = scale(dfModel$TotalWorkingYears)
+dfModel$Z_YearsAtCompany = scale(dfModel$YearsAtCompany)
+dfModel$Z_YearsInRole = scale(dfModel$YearsInCurrentRole)
+dfModel$Z_YearsWithManager = scale(dfModel$YearsWithCurrManager)
+dfModel$Z_JobInvolvement = scale(dfModel$JobInvolvement)
+dfModel$Z_JobSat = scale(dfModel$JobSatisfaction)
+dfModel$Z_EnvSat = scale(dfModel$EnvironmentSatisfaction)
+dfModel$Z_WLB = scale(dfModel$WorkLifeBalance)
+dfModel$Z_Distance = scale(dfModel$DistanceFromHome)
+
+# KNN features: 5 flags + 13 standardized numeric = 18
+knnVars = c("OverTimeNum", "SingleNum", "SalesRepNum", "SalesDeptNum", "TravelFreqNum",
+            "Z_Income", "Z_JobLevel", "Z_Stock", "Z_Age", "Z_TotalYears", "Z_YearsAtCompany",
+            "Z_YearsInRole", "Z_YearsWithManager", "Z_JobInvolvement", "Z_JobSat",
+            "Z_EnvSat", "Z_WLB", "Z_Distance")
+
+# Naive Bayes can use the 18 significant features directly
+nbVars = sigFeatures
+
+length(knnVars)
+length(nbVars)
+
+# 70/30 train/test split
+set.seed(4)
+splitPerc = .7
+trainIndices = sample(1:dim(dfModel)[1], round(splitPerc * dim(dfModel)[1]))
+train = dfModel[trainIndices,]
+test = dfModel[-trainIndices,]
+```
+
+# 6. KNN (Default Cutoff of 0.5)
+
+```{r}
+# Loop over many k 
+numks = 30
+knnResults = data.frame(k = numeric(numks), Accuracy = numeric(numks),
+                        Sensitivity = numeric(numks), Specificity = numeric(numks))
+
+for(i in 1:numks)
+{
+  classifications = knn(train[,knnVars], test[,knnVars], train$Attrition, prob = TRUE, k = i)
+  CM = confusionMatrix(table(classifications, test$Attrition), positive = "Yes")
+  knnResults$k[i] = i
+  knnResults$Accuracy[i] = CM$overall[1]
+  knnResults$Sensitivity[i] = CM$byClass["Sensitivity"]
+  knnResults$Specificity[i] = CM$byClass["Specificity"]
+}
+
+knnResults
+
+plot(knnResults$k, knnResults$Accuracy, type = "l", ylim = c(0,1), col = "blue",
+     xlab = "k", ylab = "Rate", main = "KNN Performance by k (Cutoff 0.5)")
+lines(knnResults$k, knnResults$Sensitivity, col = "red")
+lines(knnResults$k, knnResults$Specificity, col = "darkgreen")
+legend("right", legend = c("Accuracy", "Sensitivity", "Specificity"),
+       col = c("blue", "red", "darkgreen"), lty = 1)
+
+# Default KNN model with k = 5
+classifications = knn(train[,knnVars], test[,knnVars], train$Attrition, prob = TRUE, k = 5)
+confusionMatrix(table(classifications, test$Attrition), positive = "Yes")
+```
+
+# 7. Naive Bayes (Default Cutoff of 0.5)
+
+```{r}
+# One train/test split (same split as KNN)
+model = naiveBayes(train[,nbVars], train$Attrition, laplace = 1)
+nbPred = predict(model, test[,nbVars])
+confusionMatrix(table(nbPred, test$Attrition), positive = "Yes")
+
+# Average over many train/test splits 
+iterations = 100
+masterAcc = matrix(nrow = iterations)
+masterSens = matrix(nrow = iterations)
+masterSpec = matrix(nrow = iterations)
+
+for(j in 1:iterations)
+{
+  trainIndices = sample(1:dim(dfModel)[1], round(splitPerc * dim(dfModel)[1]))
+  train = dfModel[trainIndices,]
+  test = dfModel[-trainIndices,]
+
+  model = naiveBayes(train[,nbVars], train$Attrition, laplace = 1)
+  CM = confusionMatrix(table(predict(model, test[,nbVars]), test$Attrition), positive = "Yes")
+  masterAcc[j] = CM$overall[1]
+  masterSens[j] = CM$byClass["Sensitivity"]
+  masterSpec[j] = CM$byClass["Specificity"]
+}
+
+colMeans(masterAcc)
+colMeans(masterSens)
+colMeans(masterSpec)
+```
+
+# 8. Tuning for 60% Sensitivity and Specificity
+## Naive Bayes: tune the cutoff
+
+```{r}
+thresholds = seq(0.05, 0.50, by = 0.05)
+
+nbAccMat = matrix(nrow = iterations, ncol = length(thresholds))
+nbSensMat = matrix(nrow = iterations, ncol = length(thresholds))
+nbSpecMat = matrix(nrow = iterations, ncol = length(thresholds))
+
+set.seed(4)
+for(j in 1:iterations)
+{
+  trainIndices = sample(1:dim(dfModel)[1], round(splitPerc * dim(dfModel)[1]))
+  train = dfModel[trainIndices,]
+  test = dfModel[-trainIndices,]
+
+  model = naiveBayes(train[,nbVars], train$Attrition, laplace = 1)
+  nbProbs = predict(model, test[,nbVars], type = "raw")
+
+  for(i in 1:length(thresholds))
+  {
+    nbClass = factor(ifelse(nbProbs[,"Yes"] > thresholds[i], "Yes", "No"), levels = c("No", "Yes"))
+    CM = confusionMatrix(table(nbClass, test$Attrition), positive = "Yes")
+    nbAccMat[j,i] = CM$overall[1]
+    nbSensMat[j,i] = CM$byClass["Sensitivity"]
+    nbSpecMat[j,i] = CM$byClass["Specificity"]
+  }
+}
+
+nbTune = data.frame(Threshold = thresholds,
+                    Accuracy = colMeans(nbAccMat),
+                    Sensitivity = colMeans(nbSensMat),
+                    Specificity = colMeans(nbSpecMat))
+nbTune$Lower = pmin(nbTune$Sensitivity, nbTune$Specificity)
+
+round(nbTune, 3)
+
+# Best cutoff
+bestNB = nbTune[which.max(nbTune$Lower),]
+bestNB
+
+plot(nbTune$Threshold, nbTune$Sensitivity, type = "l", ylim = c(0,1), col = "red",
+     xlab = "Cutoff for 'Yes'", ylab = "Rate", main = "Naive Bayes: Sensitivity and Specificity by Cutoff")
+lines(nbTune$Threshold, nbTune$Specificity, col = "darkgreen")
+abline(h = 0.6, lty = 2)
+legend("right", legend = c("Sensitivity", "Specificity", "60% target"),
+       col = c("red", "darkgreen", "black"), lty = c(1, 1, 2))
+```
+
+## KNN: tune k and the cutoff
+
+```{r}
+ks = seq(3, 25, by = 2)
+knnIterations = 50
+knnTune = data.frame()
+
+set.seed(4)
+for(m in 1:length(ks))
+{
+  accMat = matrix(nrow = knnIterations, ncol = length(thresholds))
+  sensMat = matrix(nrow = knnIterations, ncol = length(thresholds))
+  specMat = matrix(nrow = knnIterations, ncol = length(thresholds))
+
+  for(j in 1:knnIterations)
+  {
+    trainIndices = sample(1:dim(dfModel)[1], round(splitPerc * dim(dfModel)[1]))
+    train = dfModel[trainIndices,]
+    test = dfModel[-trainIndices,]
+
+    classifications = knn(train[,knnVars], test[,knnVars], train$Attrition, prob = TRUE, k = ks[m])
+    probs = attr(classifications, "prob")
+    probYes = ifelse(classifications == "Yes", probs, 1 - probs)
+
+    for(i in 1:length(thresholds))
+    {
+      newClass = factor(ifelse(probYes > thresholds[i], "Yes", "No"), levels = c("No", "Yes"))
+      CM = confusionMatrix(table(newClass, test$Attrition), positive = "Yes")
+      accMat[j,i] = CM$overall[1]
+      sensMat[j,i] = CM$byClass["Sensitivity"]
+      specMat[j,i] = CM$byClass["Specificity"]
+    }
+  }
+
+  knnTune = rbind(knnTune, data.frame(k = ks[m], Threshold = thresholds,
+                                      Accuracy = colMeans(accMat),
+                                      Sensitivity = colMeans(sensMat),
+                                      Specificity = colMeans(specMat)))
+}
+
+knnTune$Lower = pmin(knnTune$Sensitivity, knnTune$Specificity)
+
+# Settings where both sensitivity and specificity are at least 60%
+knnTune %>% filter(Sensitivity >= 0.6, Specificity >= 0.6) %>% arrange(desc(Lower))
+
+# Best k and cutoff
+bestKNN = knnTune[which.max(knnTune$Lower),]
+bestKNN
+```
+
+## Tuned models on the original split
+
+```{r}
+# Same split as Sections 6 and 7
+set.seed(4)
+trainIndices = sample(1:dim(dfModel)[1], round(splitPerc * dim(dfModel)[1]))
+train = dfModel[trainIndices,]
+test = dfModel[-trainIndices,]
+
+# Tuned KNN
+classifications = knn(train[,knnVars], test[,knnVars], train$Attrition, prob = TRUE, k = bestKNN$k)
+probs = attr(classifications, "prob")
+probYes = ifelse(classifications == "Yes", probs, 1 - probs)
+knnTunedClass = factor(ifelse(probYes > bestKNN$Threshold, "Yes", "No"), levels = c("No", "Yes"))
+confusionMatrix(table(knnTunedClass, test$Attrition), positive = "Yes")
+
+# Tuned Naive Bayes
+model = naiveBayes(train[,nbVars], train$Attrition, laplace = 1)
+nbProbs = predict(model, test[,nbVars], type = "raw")
+nbTunedClass = factor(ifelse(nbProbs[,"Yes"] > bestNB$Threshold, "Yes", "No"), levels = c("No", "Yes"))
+confusionMatrix(table(nbTunedClass, test$Attrition), positive = "Yes")
+```
+
+# 9. Model Comparison
+
+```{r}
+# Default settings (cutoff 0.5) pulled from the tuning tables
+knnDefault = knnTune[knnTune$k == 5 & abs(knnTune$Threshold - 0.5) < 0.001,]
+nbDefault = nbTune[abs(nbTune$Threshold - 0.5) < 0.001,]
+
+modelResults = data.frame(
+  Model = rep(c("KNN (k=5, cutoff 0.5)", "KNN (tuned)", "NB (cutoff 0.5)", "NB (tuned)"), each = 3),
+  Metric = rep(c("Accuracy", "Sensitivity", "Specificity"), 4),
+  Value = c(knnDefault$Accuracy, knnDefault$Sensitivity, knnDefault$Specificity,
+            bestKNN$Accuracy, bestKNN$Sensitivity, bestKNN$Specificity,
+            nbDefault$Accuracy, nbDefault$Sensitivity, nbDefault$Specificity,
+            bestNB$Accuracy, bestNB$Sensitivity, bestNB$Specificity) * 100
+)
+
+modelResults$Model = factor(modelResults$Model,
+                            levels = c("KNN (k=5, cutoff 0.5)", "KNN (tuned)", "NB (cutoff 0.5)", "NB (tuned)"))
+
+modelResults
+
+# Grouped bar chart (Unit 2 position = "dodge")
+modelResults %>%
+  ggplot(aes(x = Metric, y = Value, fill = Model)) +
+  geom_col(position = "dodge") +
+  geom_text(aes(label = round(Value, 1)), position = position_dodge(width = 0.9), vjust = -0.3, size = 3) +
+  ggtitle("Average Test-Set Performance by Model") +
+  xlab("Metric") + ylab("Percent (%)")
+
+# F1 score for the tuned models on the original split (precision and recall combined)
+cmKnnTuned = confusionMatrix(table(knnTunedClass, test$Attrition), positive = "Yes", mode = "everything")
+cmNBTuned = confusionMatrix(table(nbTunedClass, test$Attrition), positive = "Yes", mode = "everything")
+cmKnnTuned$byClass["F1"]
+cmNBTuned$byClass["F1"]
+```
+
+# 10. Cost / Savings Analysis
+
+```{r}
+annualSalary = test$MonthlyIncome * 12
+leftYes = test$Attrition == "Yes"
+
+# every leaver has to be replaced
+noModelLow = sum(annualSalary[leftYes]) * 0.5
+noModelHigh = sum(annualSalary[leftYes]) * 4
+
+costResults = data.frame()
+
+for(m in c("KNN (tuned)", "NB (tuned)"))
+{
+  if(m == "KNN (tuned)") { pred = knnTunedClass } else { pred = nbTunedClass }
+
+  flagged = sum(pred == "Yes")
+  caught = pred == "Yes" & leftYes
+  incentiveCost = flagged * 200
+
+  costResults = rbind(costResults, data.frame(
+    Model = m,
+    Flagged = flagged,
+    LeaversCaught = sum(caught),
+    LeaversMissed = sum(pred == "No" & leftYes),
+    IncentiveCost = incentiveCost,
+    SavingsLow = sum(annualSalary[caught]) * 0.5 - incentiveCost,
+    SavingsHigh = sum(annualSalary[caught]) * 4 - incentiveCost,
+    # share of caught leavers the incentive must keep to pay for itself 
+    BreakEvenPercent = round(incentiveCost / (sum(annualSalary[caught]) * 0.5) * 100, 1)))
+}
+
+noModelLow
+noModelHigh
+costResults
+```
+
+# 11. Competition Set Predictions
+
+The final model is Naive Bayes with the 18 significant features and the tuned cutoff.
+For the predictions it is trained on all 870 employees.
+
+```{r}
+comp = read.csv("C:/Users/jorge/Downloads/CaseStudy1CompSet No Attrition.csv", header = TRUE, stringsAsFactors = TRUE)
+dim(comp)
+
+# Final model trained on all 870 employees
+finalModel = naiveBayes(dfModel[,nbVars], dfModel$Attrition, laplace = 1)
+
+# Probability of leaving, then the tuned cutoff
+compProbs = predict(finalModel, comp[,nbVars], type = "raw")
+comp$Attrition = ifelse(compProbs[,"Yes"] > bestNB$Threshold, "Yes", "No")
+
+# Kept ID and prediction and ordered by ID 
+predictions = comp %>% select(ID, Attrition) %>% arrange(ID)
+table(predictions$Attrition)
+
+write.csv(predictions, "C:/Users/jorge/Downloads/Case1PredictionsVazquez Attrition.csv", row.names = FALSE)
+```
